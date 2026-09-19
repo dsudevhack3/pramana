@@ -22,4 +22,3 @@ Pillow==10.4.0
 pytesseract==0.3.13
 opencv-python-headless==4.10.0.84
 huggingface-hub>=0.34,<1.0
-tensorflow
