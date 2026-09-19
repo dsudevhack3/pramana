@@ -30,6 +30,7 @@ def assess_risk(
     layout_consistency_score: float = 1.0,
     ai_tampering_probability: float | None = None,
     ai_model_available: bool = False,
+    no_camera_metadata: bool = False,
 ) -> RiskAssessment:
 
     reasons: list[str] = []

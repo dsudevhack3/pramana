@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 
 import pytesseract
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 from PIL import Image
 
 # Rough regex patterns — tune against real sample prescriptions before
