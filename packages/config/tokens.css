@@ -1,0 +1,138 @@
+/* =============================================================================
+   Pramana design system - THE single source of design tokens.
+   Design system SS1 (colour), SS2 (type), SS3 (shape/elevation/spacing),
+   SS7 (motion).
+
+   No app, page or component may define its own colour, radius, shadow or
+   duration value. If a value is not in this file, it does not exist in the
+   product. Components import tokens; they never restate them.
+   ============================================================================= */
+
+:root {
+  /* --- structure: text, chrome, surfaces --------------------------------- */
+  --ink:        #1A1B33;  /* primary text, nav rails, primary buttons        */
+  --ink-2:      #2B2D4F;  /* hover states, secondary dark surfaces           */
+  --ink-3:      #474A73;  /* tertiary text, chart series 2, disabled-legible */
+  --canvas:     #EDEBF2;  /* app background - cool lilac-grey. NEVER white.  */
+  --canvas-2:   #E3E1EC;  /* inset tracks, skeletons, empty-state fills      */
+  --surface:    #FFFFFF;  /* cards, documents, modals                        */
+  --muted:      #6E6F8C;  /* secondary text, placeholders, captions          */
+  --line:       rgba(26, 27, 51, 0.12);
+  --line-2:     rgba(26, 27, 51, 0.07);
+
+  /* --- meaning: each state owns one hue, permanently, across every app ---- */
+  --seal:              #8E2A3E;  /* BRAND. Signing, provenance, the seal.    */
+  --seal-light:        #B2455C;  /* also the focus-ring colour (SS8)         */
+  --seal-wash:         #F6E9EC;
+  --tourmaline:        #0F6E6E;  /* verified / valid / passed - NEVER green  */
+  --tourmaline-wash:   #E2F0EF;
+  --amber:             #A9700F;  /* expiring / pending review / in progress  */
+  --amber-wash:        #F8EEDA;
+  --scarlet:           #B3261E;  /* rejected / revoked / reused / destructive*/
+  --scarlet-wash:      #FBEAE8;
+
+  /* --- shape (SS3) -------------------------------------------------------- */
+  --radius-control: 9px;    /* inputs, chips, small buttons                  */
+  --radius-button:  11px;
+  --radius-card:    14px;
+  --radius-hero:    16px;   /* trust-tier banners, hero panels               */
+  --radius-full:    999px;  /* badges, pills, avatars                        */
+
+  /* The ONLY shadow in the system. Raised primary actions only.
+     Cards are separated from the background by a 1px --line border. */
+  --shadow-primary: 0 6px 16px -8px rgba(26, 27, 51, 0.9);
+
+  /* --- spacing scale: 4 / 8 / 12 / 16 / 20 / 24 / 32 / 48 / 64 ------------ */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-7: 32px; --space-8: 48px;
+  --space-9: 64px;
+
+  /* --- type (SS2) --------------------------------------------------------- */
+  --font-document: Spectral, "Iowan Old Style", Georgia, serif;
+  --font-ui: "Public Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --text-title-lg: clamp(1.5rem, 1.1rem + 1.6vw, 1.875rem); /* 24-30px */
+  --text-title:    clamp(1.25rem, 1rem + 1vw, 1.5rem);      /* 20-24px */
+  --text-title-sm: 1.1875rem;                                /* 19px    */
+  --text-body:     0.9375rem;  /* 15px - never scales down further */
+  --text-body-sm:  0.84375rem; /* 13.5px */
+  --text-caption:  0.78125rem; /* 12.5px */
+  --text-mono:     0.7125rem;  /* 11.4px */
+
+  --leading-title: 1.25;
+  --leading-body: 1.5;
+  --measure-body: 70ch;  /* body copy line-length cap, any container width */
+  --measure-field: 560px;/* form field cap, any viewport width             */
+
+  /* --- motion (SS7) ------------------------------------------------------- */
+  --ease-out:    cubic-bezier(0.20, 0.75, 0.30, 1.00);
+  --ease-in:     cubic-bezier(0.40, 0.00, 1.00, 1.00);
+  --ease-seal:   cubic-bezier(0.30, 1.50, 0.50, 1.00);
+  --ease-smooth: cubic-bezier(0.40, 0.00, 0.20, 1.00);
+
+  --dur-instant: 120ms;
+  --dur-quick:   200ms;
+  --dur-base:    320ms;
+  --dur-slow:    620ms;
+  --dur-fill:    1300ms;
+
+  /* --- layout ------------------------------------------------------------- */
+  --content-max: 1240px;
+  --rail-width: 236px;
+  --touch-min: 44px;
+
+  color-scheme: light dark;
+}
+
+/* Dark mode - same relationships, inverted ground, never a pure black. */
+:root[data-theme="dark"] {
+  --ink:      #F1F0F7;
+  --ink-2:    #D7D6E6;
+  --ink-3:    #ABADC9;
+  --canvas:   #14152A;
+  --canvas-2: #1C1D38;
+  --surface:  #1F2040;
+  --muted:    #9698BA;
+  --line:     rgba(241, 240, 247, 0.14);
+  --line-2:   rgba(241, 240, 247, 0.08);
+
+  --seal:            #C25A70;
+  --seal-light:      #D57A8D;
+  --seal-wash:       #2E1620;
+  --tourmaline:      #3FA9A3;
+  --tourmaline-wash: #12302E;
+  --amber:           #D0A040;
+  --amber-wash:      #352708;
+  --scarlet:         #E0776E;
+  --scarlet-wash:    #3A1512;
+
+  --shadow-primary: 0 6px 16px -8px rgba(0, 0, 0, 0.9);
+}
+
+/* Honour the OS preference until the user picks a theme explicitly. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink:      #F1F0F7;
+    --ink-2:    #D7D6E6;
+    --ink-3:    #ABADC9;
+    --canvas:   #14152A;
+    --canvas-2: #1C1D38;
+    --surface:  #1F2040;
+    --muted:    #9698BA;
+    --line:     rgba(241, 240, 247, 0.14);
+    --line-2:   rgba(241, 240, 247, 0.08);
+
+    --seal:            #C25A70;
+    --seal-light:      #D57A8D;
+    --seal-wash:       #2E1620;
+    --tourmaline:      #3FA9A3;
+    --tourmaline-wash: #12302E;
+    --amber:           #D0A040;
+    --amber-wash:      #352708;
+    --scarlet:         #E0776E;
+    --scarlet-wash:    #3A1512;
+
+    --shadow-primary: 0 6px 16px -8px rgba(0, 0, 0, 0.9);
+  }
+}

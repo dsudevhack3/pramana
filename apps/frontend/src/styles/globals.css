@@ -1,0 +1,10 @@
+/* One stylesheet for the whole app. Tokens and base styles come from the shared
+   packages. The four portals used identical globals, so nothing is duplicated
+   here; the few rules that belong to one portal live in its own file
+   (doctor.css, admin.css, ...) and load with that portal's chunk. */
+@import '@pramana/config/tokens.css';
+@import '@pramana/ui-components/styles.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

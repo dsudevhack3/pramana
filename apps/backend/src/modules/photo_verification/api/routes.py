@@ -1,0 +1,821 @@
+"""
+Prescription photo verification pipeline.
+
+Pipeline:
+
+1. Image quality
+2. Metadata / timestamp / dimensions
+3. OCR
+4. Platform prescription match
+5. AI tampering analysis
+6. External verification when no platform match
+7. Forensic analysis
+8. Text consistency analysis
+9. Layout consistency analysis
+10. Risk scoring
+11. Persistence
+"""
+
+import io
+from src.modules.photo_verification.services.provenance_marker_service import detect_ai_provenance
+import uuid
+from typing import Annotated
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile,
+)
+from PIL import Image
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.db.session import get_db_session
+from src.core.security.jwt import (
+    TokenPayload,
+    get_current_user,
+)
+
+from src.modules.clinics.services.maps_verification_service import (
+    MapsVerificationService,
+)
+
+from src.modules.doctors.services.medical_registry_client import (
+    MedicalRegistryClient,
+)
+
+from src.modules.prescriptions.services.drug_validation_service import (
+    DrugValidationService,
+)
+
+from src.modules.photo_verification.models.photo_verification_result import (
+    PhotoVerificationResult,
+    ReviewStatus,
+    RiskLevel,
+    VerificationCase,
+)
+
+from src.modules.photo_verification.schemas.photo_verification_schema import (
+    AITamperingResult as AITamperingSchema,
+    ForensicAnalysisResult as ForensicAnalysisSchema,
+    LayoutConsistencyResult as LayoutConsistencySchema,
+    OcrExtractionResult as OcrExtractionSchema,
+    PhotoVerificationResponse,
+    TextConsistencyResult as TextConsistencySchema,
+)
+
+from src.modules.photo_verification.services import (
+    forensic_analysis_service,
+    image_quality_service,
+    ocr_extraction_service,
+    platform_match_service,
+    risk_scoring_service,
+)
+
+from src.modules.photo_verification.services.ai_tampering_service import (
+    AITamperingService,
+)
+
+from src.modules.photo_verification.services.layout_analysis_service import (
+    LayoutAnalysisService,
+)
+
+from src.modules.photo_verification.services.text_consistency_service import (
+    TextConsistencyService,
+)
+
+
+router = APIRouter()
+
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+async def _verify_license(
+    license_number: str | None,
+) -> bool | None:
+    """
+    Verify doctor license against the configured medical registry.
+
+    Returns:
+        True  -> registry confirmed active
+        False -> registry responded but license is not active
+        None  -> verification unavailable / no input
+    """
+    if not license_number:
+        return None
+
+    try:
+        client = MedicalRegistryClient()
+
+        result = await client.lookup(
+            license_number=license_number,
+            council_name="",
+        )
+
+        if result is None:
+            return False
+
+        return result.get("status") == "active"
+
+    except Exception:
+        return None
+
+
+async def _verify_clinic(
+    clinic_address: str | None,
+) -> bool | None:
+    """
+    Verify clinic address using the configured maps service.
+    """
+    if not clinic_address:
+        return None
+
+    try:
+        maps = MapsVerificationService()
+
+        result = await maps.confirm_address(
+            clinic_address
+        )
+
+        return result is not None
+
+    except Exception:
+        return None
+
+
+async def _verify_drugs(
+    drug_names: list[str],
+) -> bool | None:
+    """
+    Verify all extracted drug names against the configured formulary service.
+    """
+    if not drug_names:
+        return None
+
+    service = DrugValidationService()
+
+    verified_count = 0
+
+    for drug_name in drug_names:
+        try:
+            result = await service.autocomplete(
+                drug_name
+            )
+
+            if result:
+                verified_count += 1
+
+        except Exception:
+            continue
+
+    return verified_count == len(drug_names)
+
+
+@router.post(
+    "/verify",
+    response_model=PhotoVerificationResponse,
+)
+async def verify_prescription_photo(
+    file: Annotated[
+        UploadFile,
+        File(),
+    ],
+    current_user: Annotated[
+        TokenPayload,
+        Depends(get_current_user),
+    ],
+    db: Annotated[
+        AsyncSession,
+        Depends(get_db_session),
+    ],
+) -> PhotoVerificationResponse:
+
+    # =========================================================
+    # STEP 0 — READ IMAGE
+    # =========================================================
+
+    raw_bytes = await file.read()
+
+    provenance_result = detect_ai_provenance(raw_bytes)
+
+    if not raw_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is empty",
+        )
+
+    if len(raw_bytes) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Image exceeds maximum upload size of "
+                f"{_MAX_UPLOAD_BYTES} bytes"
+            ),
+        )
+
+    try:
+        image = Image.open(
+            io.BytesIO(raw_bytes)
+        )
+
+        image.load()
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file is not a valid image",
+        ) from exc
+
+    # =========================================================
+    # STEP 1 — IMAGE QUALITY
+    # =========================================================
+
+    quality_result = (
+        image_quality_service.check_image_quality(
+            image
+        )
+    )
+
+    if not quality_result.passed:
+        return PhotoVerificationResponse(
+            id=str(uuid.uuid4()),
+            verification_case=(
+                VerificationCase.NO_PLATFORM_MATCH.value
+            ),
+            matched_prescription_id=None,
+            ocr_result=OcrExtractionSchema(),
+            forensic_result=None,
+            ai_tampering_result=AITamperingSchema(
+                model_available=False,
+                prediction="AI_NOT_RUN",
+            ),
+            text_consistency_result=None,
+            layout_consistency_result=None,
+            license_check_passed=None,
+            clinic_check_passed=None,
+            drug_check_passed=None,
+            risk_level=RiskLevel.MEDIUM.value,
+            risk_reasons=[
+                f"Image quality issue: {issue}"
+                for issue in quality_result.issues
+            ]
+            + [
+                "Please retake the photo with better "
+                "lighting/focus and resubmit"
+            ],
+            review_status=(
+                ReviewStatus.NOT_REQUIRED.value
+            ),
+        )
+
+    # =========================================================
+    # STEP 2 — OCR
+    # =========================================================
+
+    ocr_result = (
+        ocr_extraction_service.extract_fields(
+            image
+        )
+    )
+
+    # =========================================================
+    # STEP 3 — PLATFORM MATCH
+    #
+    # The platform matcher uses synchronous SQLAlchemy
+    # internally, so AsyncSession.run_sync() bridges it safely.
+    # =========================================================
+
+    match_result = await db.run_sync(
+        lambda sync_session:
+        platform_match_service.find_matching_prescription(
+            sync_session,
+            ocr_result,
+        )
+    )
+
+    # =========================================================
+    # STEP 4 — AI TAMPERING ANALYSIS
+    # =========================================================
+
+    ai_result_data = AITamperingService.predict(
+        image
+    )
+
+    ai_tampering_result = AITamperingSchema(
+        probability=(
+            ai_result_data.probability
+        ),
+        prediction=(
+            ai_result_data.prediction
+        ),
+        model_name=(
+            ai_result_data.model_name
+        ),
+        model_available=(
+            ai_result_data.model_available
+        ),
+        error=(
+            ai_result_data.error
+        ),
+    )
+
+    # =========================================================
+    # STEP 5 — FORENSIC ANALYSIS
+    # =========================================================
+
+    forensic_result_data = (
+        forensic_analysis_service.analyze(
+            image
+        )
+    )
+
+    forensic_result = ForensicAnalysisSchema(
+        flags=(
+            forensic_result_data.flags
+        ),
+        ela_anomaly_score=(
+            forensic_result_data.ela_anomaly_score
+        ),
+        metadata_flags=(
+            forensic_result_data.metadata_flags
+        ),
+        timestamp_flags=(
+            forensic_result_data.timestamp_flags
+        ),
+        dimension_flags=(
+            forensic_result_data.dimension_flags
+        ),
+        manipulation_flags=(
+            forensic_result_data.manipulation_flags
+        ),
+        layout_flags=(
+            forensic_result_data.layout_flags
+        ),
+        forensic_score=(
+            forensic_result_data.forensic_score
+        ),
+    )
+
+    # =========================================================
+    # STEP 6 — TEXT CONSISTENCY
+    # =========================================================
+
+    text_result_data = TextConsistencyService.analyze(
+        ocr_result
+    )
+
+    text_consistency_result = TextConsistencySchema(
+        score=(
+            text_result_data.score
+        ),
+        status=(
+            text_result_data.status
+        ),
+        flags=(
+            text_result_data.flags
+        ),
+    )
+
+    # =========================================================
+    # STEP 7 — LAYOUT CONSISTENCY
+    # =========================================================
+
+    layout_result_data = LayoutAnalysisService.analyze(
+        image
+    )
+
+    layout_consistency_result = LayoutConsistencySchema(
+        score=(
+            layout_result_data.score
+        ),
+        status=(
+            layout_result_data.status
+        ),
+        flags=(
+            layout_result_data.flags
+        ),
+    )
+
+    # =========================================================
+    # DEFAULT EXTERNAL CHECKS
+    # =========================================================
+
+    license_check_passed: bool | None = None
+    clinic_check_passed: bool | None = None
+    drug_check_passed: bool | None = None
+
+    # =========================================================
+    # CASE A — PLATFORM MATCH
+    # =========================================================
+
+    if match_result.matched:
+
+        risk_level = RiskLevel.VERIFIED.value
+
+        risk_reasons = [
+            "Prescription matches an existing "
+            "platform record: "
+            f"{match_result.prescription_id}"
+        ]
+
+        verification_case = (
+            VerificationCase.MATCHED_PLATFORM_RECORD.value
+        )
+
+        review_status = (
+            ReviewStatus.NOT_REQUIRED.value
+        )
+
+    # =========================================================
+    # CASE B — NO PLATFORM MATCH
+    # =========================================================
+
+    else:
+
+        # -----------------------------------------------------
+        # STEP 8 — EXTERNAL VERIFICATION
+        # -----------------------------------------------------
+
+        license_check_passed = await _verify_license(
+            ocr_result.license_number
+        )
+
+        clinic_check_passed = await _verify_clinic(
+            ocr_result.clinic_address
+        )
+
+        drug_check_passed = await _verify_drugs(
+            ocr_result.drug_names
+        )
+
+        # -----------------------------------------------------
+        # STEP 9 — RISK SCORING
+        # -----------------------------------------------------
+
+        assessment = risk_scoring_service.assess_risk(
+            license_check_passed=(
+                license_check_passed
+            ),
+            clinic_check_passed=(
+                clinic_check_passed
+            ),
+            drug_check_passed=(
+                drug_check_passed
+            ),
+            forensic_flags=(
+                forensic_result_data.flags
+            ),
+            forensic_score=(
+                forensic_result_data.forensic_score
+            ),
+            text_consistency_score=(
+                text_result_data.score
+            ),
+            layout_consistency_score=(
+                layout_result_data.score
+            ),
+            ai_tampering_probability=(
+                ai_result_data.probability
+            ),
+            ai_model_available=(
+                ai_result_data.model_available
+            ),
+            no_camera_metadata=(
+                provenance_result.no_camera_metadata
+            ),
+        )
+
+        risk_level = assessment.risk_level
+
+        risk_reasons = assessment.reasons
+        if provenance_result.ai_marker_found:
+            risk_level = RiskLevel.HIGH.value
+            risk_reasons = [
+                "AI-generation marker found in the image file: "
+                + "; ".join(provenance_result.flags),
+                *list(risk_reasons),
+            ]
+
+        verification_case = (
+            VerificationCase.NO_PLATFORM_MATCH.value
+        )
+
+        if risk_level in (
+            RiskLevel.MEDIUM.value,
+            RiskLevel.HIGH.value,
+        ):
+            review_status = (
+                ReviewStatus.PENDING_REVIEW.value
+            )
+        else:
+            review_status = (
+                ReviewStatus.NOT_REQUIRED.value
+            )
+
+    # =========================================================
+    # STEP 10 — PERSIST RESULT
+    # =========================================================
+
+    record = PhotoVerificationResult(
+        uploaded_by_user_id=str(
+            current_user.sub
+        ),
+
+        image_storage_path=(
+            "uploads/photo_verification/"
+            f"{uuid.uuid4()}.jpg"
+        ),
+
+        image_quality_passed=True,
+
+        image_quality_issues=[],
+
+        # -----------------------------------------------------
+        # OCR
+        # -----------------------------------------------------
+
+        extracted_doctor_name=(
+            ocr_result.doctor_name
+        ),
+
+        extracted_license_number=(
+            ocr_result.license_number
+        ),
+
+        extracted_clinic_address=(
+            ocr_result.clinic_address
+        ),
+
+        extracted_drug_names=(
+            ocr_result.drug_names
+        ),
+
+        extracted_date=(
+            ocr_result.date
+        ),
+
+        extracted_patient_name=(
+            ocr_result.patient_name
+        ),
+
+        ocr_field_confidence=(
+            ocr_result.field_confidence
+        ),
+
+        # -----------------------------------------------------
+        # PLATFORM MATCH
+        # -----------------------------------------------------
+
+        verification_case=(
+            verification_case
+        ),
+
+        matched_prescription_id=(
+            match_result.prescription_id
+        ),
+
+        # -----------------------------------------------------
+        # EXTERNAL VERIFICATION
+        # -----------------------------------------------------
+
+        license_check_passed=(
+            license_check_passed
+        ),
+
+        clinic_check_passed=(
+            clinic_check_passed
+        ),
+
+        drug_check_passed=(
+            drug_check_passed
+        ),
+
+        # -----------------------------------------------------
+        # FORENSICS
+        # -----------------------------------------------------
+
+        forensic_flags=(
+            forensic_result_data.flags
+        ),
+
+        ela_anomaly_score=(
+            forensic_result_data.ela_anomaly_score
+        ),
+
+        metadata_flags=(
+            forensic_result_data.metadata_flags
+        ),
+
+        timestamp_flags=(
+            forensic_result_data.timestamp_flags
+        ),
+
+        dimension_flags=(
+            forensic_result_data.dimension_flags
+        ),
+
+        manipulation_flags=(
+            forensic_result_data.manipulation_flags
+        ),
+
+        layout_flags=(
+            forensic_result_data.layout_flags
+        ),
+
+        forensic_score=(
+            forensic_result_data.forensic_score
+        ),
+
+        # -----------------------------------------------------
+        # AI TAMPERING
+        # -----------------------------------------------------
+
+        ai_tampering_probability=(
+            ai_result_data.probability
+        ),
+
+        ai_tampering_prediction=(
+            ai_result_data.prediction
+        ),
+
+        ai_model_name=(
+            ai_result_data.model_name
+        ),
+
+        ai_model_available=(
+            ai_result_data.model_available
+        ),
+
+        ai_error=(
+            ai_result_data.error
+        ),
+
+        # -----------------------------------------------------
+        # TEXT CONSISTENCY
+        # -----------------------------------------------------
+
+        text_consistency_score=(
+            text_result_data.score
+        ),
+
+        text_consistency_status=(
+            text_result_data.status
+        ),
+
+        text_consistency_flags=(
+            text_result_data.flags
+        ),
+
+        # -----------------------------------------------------
+        # LAYOUT CONSISTENCY
+        # -----------------------------------------------------
+
+        layout_consistency_score=(
+            layout_result_data.score
+        ),
+
+        layout_consistency_status=(
+            layout_result_data.status
+        ),
+
+        layout_consistency_flags=(
+            layout_result_data.flags
+        ),
+
+        # -----------------------------------------------------
+        # FINAL RESULT
+        # -----------------------------------------------------
+
+        risk_level=(
+            risk_level
+        ),
+
+        risk_reasons=(
+            risk_reasons
+        ),
+
+        review_status=(
+            review_status
+        ),
+    )
+
+    db.add(record)
+
+    await db.flush()
+    await db.commit()
+    await db.refresh(record)
+
+    # =========================================================
+    # STEP 11 — RESPONSE
+    # =========================================================
+
+    return PhotoVerificationResponse(
+        id=str(record.id),
+
+        verification_case=(
+            verification_case
+        ),
+
+        matched_prescription_id=(
+            match_result.prescription_id
+        ),
+
+        # -----------------------------------------------------
+        # OCR
+        # -----------------------------------------------------
+
+        ocr_result=OcrExtractionSchema(
+            doctor_name=(
+                ocr_result.doctor_name
+            ),
+
+            license_number=(
+                ocr_result.license_number
+            ),
+
+            clinic_address=(
+                ocr_result.clinic_address
+            ),
+
+            drug_names=(
+                ocr_result.drug_names
+            ),
+
+            date=(
+                ocr_result.date
+            ),
+
+            patient_name=(
+                ocr_result.patient_name
+            ),
+
+            field_confidence=(
+                ocr_result.field_confidence
+            ),
+        ),
+
+        # -----------------------------------------------------
+        # FORENSICS
+        # -----------------------------------------------------
+
+        forensic_result=(
+            forensic_result
+        ),
+
+        # -----------------------------------------------------
+        # AI
+        # -----------------------------------------------------
+
+        ai_tampering_result=(
+            ai_tampering_result
+        ),
+
+        # -----------------------------------------------------
+        # EXTERNAL CHECKS
+        # -----------------------------------------------------
+
+        license_check_passed=(
+            license_check_passed
+        ),
+
+        clinic_check_passed=(
+            clinic_check_passed
+        ),
+
+        drug_check_passed=(
+            drug_check_passed
+        ),
+
+        # -----------------------------------------------------
+        # TEXT CONSISTENCY
+        # -----------------------------------------------------
+
+        text_consistency_result=(
+            text_consistency_result
+        ),
+
+        # -----------------------------------------------------
+        # LAYOUT CONSISTENCY
+        # -----------------------------------------------------
+
+        layout_consistency_result=(
+            layout_consistency_result
+        ),
+
+        # -----------------------------------------------------
+        # FINAL
+        # -----------------------------------------------------
+
+        risk_level=(
+            risk_level
+        ),
+
+        risk_reasons=(
+            risk_reasons
+        ),
+
+        review_status=(
+            review_status
+        ),
+    )

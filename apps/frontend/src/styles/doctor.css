@@ -1,0 +1,13 @@
+/* Doctor portal shell. SS6, under 640px: the primary action sits above the
+   bottom tab bar and stays in reach. One primary action per screen, at every
+   width. Class name is unique to this portal, so it cannot collide. */
+.sticky-action {
+  position: sticky;
+  bottom: calc(64px + env(safe-area-inset-bottom));
+  z-index: 30;
+  padding: var(--space-3) 0;
+  background: linear-gradient(to top, var(--canvas) 62%, transparent);
+}
+@media (min-width: 640px) {
+  .sticky-action { position: static; background: none; padding: 0; }
+}

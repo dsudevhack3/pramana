@@ -1,0 +1,13 @@
+{
+  "name": "@pramana/config",
+  "version": "2.0.0",
+  "private": true,
+  "main": "tailwind-preset.js",
+  "files": ["tokens.css", "tailwind-preset.js", "tsconfig.base.json", "eslint-preset.js"],
+  "exports": {
+    "./tokens.css": "./tokens.css",
+    "./tailwind-preset": "./tailwind-preset.js",
+    "./eslint-preset": "./eslint-preset.js",
+    "./tsconfig.base.json": "./tsconfig.base.json"
+  }
+}
